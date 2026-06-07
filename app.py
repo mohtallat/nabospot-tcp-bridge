@@ -12,6 +12,7 @@ from omni_protocol import (
     decode_h0,
     decode_s5,
 )
+from zento_barrier import zento_provider
 
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "change-me")
 NABOSPOT_BACKEND_BASE_URL = os.getenv("NABOSPOT_BACKEND_BASE_URL", "").rstrip("/")
@@ -294,6 +295,83 @@ def lock_lock(imei: str, x_bridge_key: str | None = Header(default=None)):
         raise HTTPException(status_code=404, detail="Lock is not connected")
 
     return {"imei": imei, "command": "lock", "status": "sent"}
+
+
+def _run_zento_command(gateway_serial: str, rs485_address: int, command: str):
+    try:
+        return zento_provider.execute(gateway_serial, rs485_address, command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+    except Exception as exc:
+        print(f"[ZENTO ERROR] command={command} gateway={gateway_serial} rs485={rs485_address}: {exc}")
+        raise HTTPException(status_code=500, detail="Boom barrier command failed")
+
+
+@http_app.get("/barriers/{gateway_serial}/{rs485_address}/status")
+def get_barrier_status(
+    gateway_serial: str,
+    rs485_address: int,
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    state = zento_provider.get_state(gateway_serial, rs485_address)
+    return {
+        "success": True,
+        "provider": "zento",
+        "gateway_serial": state.gateway_serial,
+        "rs485_address": state.rs485_address,
+        "connected": True,
+        "mock": zento_provider.mock_mode,
+        "barrier_state": state.barrier_state,
+        "fault_state": state.fault_state,
+        "voltage": state.voltage,
+        "current": state.current,
+        "last_seen_at": state.last_seen_at.isoformat() if state.last_seen_at else None,
+        "last_command": state.last_command,
+        "last_command_at": state.last_command_at.isoformat() if state.last_command_at else None,
+    }
+
+
+@http_app.post("/barriers/{gateway_serial}/{rs485_address}/open")
+def open_barrier(
+    gateway_serial: str,
+    rs485_address: int,
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    return _run_zento_command(gateway_serial, rs485_address, "open")
+
+
+@http_app.post("/barriers/{gateway_serial}/{rs485_address}/close")
+def close_barrier(
+    gateway_serial: str,
+    rs485_address: int,
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    return _run_zento_command(gateway_serial, rs485_address, "close")
+
+
+@http_app.post("/barriers/{gateway_serial}/{rs485_address}/stop")
+def stop_barrier(
+    gateway_serial: str,
+    rs485_address: int,
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    return _run_zento_command(gateway_serial, rs485_address, "stop")
+
+
+@http_app.post("/barriers/{gateway_serial}/{rs485_address}/status")
+def query_barrier_status(
+    gateway_serial: str,
+    rs485_address: int,
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    return _run_zento_command(gateway_serial, rs485_address, "status")
 
 if __name__ == "__main__":
     tcp_thread = threading.Thread(target=start_server, daemon=True)
