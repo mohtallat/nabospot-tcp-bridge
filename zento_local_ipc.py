@@ -109,6 +109,7 @@ class LocalIPCServer:
         self._server = None
         self._thread = None
         self._stop = threading.Event()
+        self._socket_identity = None
 
         if not self.allowed_uids:
             raise ValueError("allowed_uids must not be empty")
@@ -128,17 +129,21 @@ class LocalIPCServer:
             socket.AF_UNIX, socket.SOCK_STREAM
         )
 
+        bound_identity = None
         try:
             server.bind(str(self.path))
+            stat = self.path.lstat()
+            bound_identity = (stat.st_dev, stat.st_ino)
             os.chmod(self.path, 0o600)
             server.listen(8)
             server.settimeout(0.2)
         except BaseException:
             server.close()
-            if self.path.is_socket():
-                self.path.unlink()
+            self._unlink_owned_socket(bound_identity)
             raise
 
+        self._socket_identity = bound_identity
+        self._stop.clear()
         self._server = server
         self._thread = threading.Thread(
             target=self._serve, daemon=True
@@ -200,6 +205,26 @@ class LocalIPCServer:
                 except (OSError, IPCError):
                     pass
 
+    def _unlink_owned_socket(self, identity):
+        """Never remove a socket path replaced by another process."""
+        if identity is None:
+            return False
+
+        try:
+            stat = self.path.lstat()
+            import stat as stat_module
+
+            if (
+                stat_module.S_ISSOCK(stat.st_mode)
+                and (stat.st_dev, stat.st_ino) == identity
+            ):
+                self.path.unlink()
+                return True
+        except FileNotFoundError:
+            pass
+
+        return False
+
     def stop(self):
         self._stop.set()
 
@@ -208,11 +233,13 @@ class LocalIPCServer:
 
         if self._thread is not None:
             self._thread.join(timeout=3)
+            if self._thread.is_alive():
+                raise RuntimeError("ipc_worker_did_not_stop")
 
-        if self.path.is_socket():
-            self.path.unlink()
-
+        self._unlink_owned_socket(self._socket_identity)
+        self._socket_identity = None
         self._server = None
+        self._thread = None
 
 
 def ipc_request(path, message, *, timeout=2.0):
