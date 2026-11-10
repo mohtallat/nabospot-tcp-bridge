@@ -1,0 +1,27 @@
+[Unit]
+Description=NaboSpot Zento RS485 TLS Recovery Listener
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nabospot-tcp
+Environment=PYTHONUNBUFFERED=1
+Environment=ZENTO_LISTEN_HOST=0.0.0.0
+Environment=ZENTO_LISTEN_PORT=9667
+ExecStart=/opt/nabospot-tcp/venv/bin/python -u /opt/nabospot-tcp/zento_recovery_listener.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/nabospot/zento-tls
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nabospot-zento
+
+[Install]
+WantedBy=multi-user.target
