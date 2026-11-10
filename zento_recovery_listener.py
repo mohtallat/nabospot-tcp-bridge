@@ -122,12 +122,22 @@ class SessionRegistry:
         if stale_after is None:
             stale_after = STATUS_INTERVAL + RESPONSE_TIMEOUT + 5
         with self._lock:
-            connected = identity in self._sessions
+            session = self._sessions.get(identity)
+            connected = session is not None
+            generation = session[0] if session else None
             status = self._last_status.get(identity)
-        fresh = bool(connected and status and time.monotonic() - status[0] <= stale_after)
-        return {"connected": connected, "online": fresh,
+            fresh = bool(
+                connected
+                and status
+                and 0 <= time.monotonic() - status[0] <= stale_after
+            )
+            return {
+                "connected": connected,
+                "online": fresh,
+                "generation": generation,
                 "barrier_state": status[2] if fresh else "unknown",
-                "last_seen_at": status[1] if status else None}
+                "last_seen_at": status[1] if status else None,
+            }
 
 
 REGISTRY = SessionRegistry()
