@@ -13,8 +13,9 @@ from omni_protocol import (
     decode_s5,
 )
 from zento_barrier import zento_provider
+from zento_bridge_security import bridge_key_valid, integration_status
 
-BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "change-me")
+BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
 NABOSPOT_BACKEND_BASE_URL = os.getenv("NABOSPOT_BACKEND_BASE_URL", "").rstrip("/")
 NABOSPOT_INTERNAL_API_KEY = os.getenv("NABOSPOT_INTERNAL_API_KEY", "")
 http_app = FastAPI(title="NaboSpot TCP Bridge")
@@ -238,7 +239,7 @@ def command_console():
             print("Unknown command")
 
 def require_bridge_key(x_bridge_key: str | None):
-    if not x_bridge_key or x_bridge_key != BRIDGE_API_KEY:
+    if not bridge_key_valid(x_bridge_key, BRIDGE_API_KEY):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -307,6 +308,15 @@ def _run_zento_command(gateway_serial: str, rs485_address: int, command: str):
     except Exception as exc:
         print(f"[ZENTO ERROR] command={command} gateway={gateway_serial} rs485={rs485_address}: {exc}")
         raise HTTPException(status_code=500, detail="Boom barrier command failed")
+
+
+
+@http_app.get("/barriers/integration/status")
+def get_zento_integration_status(
+    x_bridge_key: str | None = Header(default=None),
+):
+    require_bridge_key(x_bridge_key)
+    return integration_status(mock_mode=zento_provider.mock_mode)
 
 
 @http_app.get("/barriers/{gateway_serial}/{rs485_address}/status")
