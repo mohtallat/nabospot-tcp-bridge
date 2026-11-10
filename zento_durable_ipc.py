@@ -7,8 +7,8 @@ The command ledger remains the source of durable state.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
-from zento_command_ledger import CommandLedger
 from zento_status_ipc import ZentoStatusIPCHandler
 
 
@@ -65,11 +65,39 @@ class DurableIPCHandler:
             return self.reject("invalid_command_id")
 
         try:
-            # Each IPC worker owns its SQLite connection.
-            # No connection is shared across threads.
-            with CommandLedger(self.ledger_path) as ledger:
-                row = ledger.get(command_id)
-        except (sqlite3.Error, OSError):
+            # Open an existing database in read-only mode.
+            # Never initialize schema or share a connection
+            # across IPC worker threads.
+            database_path = Path(self.ledger_path).resolve(
+                strict=True
+            )
+            uri = database_path.as_uri() + "?mode=ro"
+
+            with sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=2,
+            ) as connection:
+                connection.execute("PRAGMA query_only=ON")
+                connection.row_factory = sqlite3.Row
+
+                record = connection.execute(
+                    """
+                    SELECT command_id, gateway_serial,
+                           state, generation, expires_at
+                    FROM commands
+                    WHERE command_id=?
+                    """,
+                    (command_id,),
+                ).fetchone()
+
+                row = dict(record) if record else None
+
+        except (
+            sqlite3.Error,
+            OSError,
+            ValueError,
+        ):
             return self.reject("ledger_unavailable")
 
         if row is None:
