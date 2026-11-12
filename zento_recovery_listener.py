@@ -15,6 +15,8 @@ import time
 from datetime import datetime, timezone
 
 from zento_protocol import ZentoFrameBuffer, ZentoProtocolError, build_frame, decode_status
+from zento_local_ipc import LocalIPCServer
+from zento_status_ipc import ZentoStatusIPCHandler
 
 LOG = logging.getLogger("zento.recovery")
 HOST = os.getenv("ZENTO_LISTEN_HOST", "0.0.0.0")
@@ -225,27 +227,42 @@ def main():
     if STATUS_INTERVAL <= 0 or RESPONSE_TIMEOUT <= 0 or MAX_MISSED_POLLS < 1:
         raise ValueError("Invalid polling configuration")
     context = create_tls_context()
+
+    ipc = LocalIPCServer(
+        "/run/nabospot-zento/status.sock",
+        allowed_uids={os.getuid()},
+        handler=ZentoStatusIPCHandler(
+            REGISTRY,
+            expected_identity=EXPECTED_CN,
+        ),
+    )
+    ipc.start()
+    LOG.info("read-only status IPC started")
+
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((HOST, PORT))
-        server.listen(16)
-        server.settimeout(1)
-        LOG.info("listening host=%s port=%s read_only=true", HOST, PORT)
-        while not stop.is_set():
-            try:
-                raw_conn, addr = server.accept()
-            except socket.timeout:
-                continue
-            # This commissioning build limits concurrent handshake workers.
-            if threading.active_count() >= 32:
-                LOG.warning("rejecting excess connection peer=%s", addr)
-                raw_conn.close()
-                continue
-            threading.Thread(target=client_worker, args=(raw_conn, addr, context), daemon=True).start()
-    LOG.info("listener stopped")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((HOST, PORT))
+            server.listen(16)
+            server.settimeout(1)
+            LOG.info("listening host=%s port=%s read_only=true", HOST, PORT)
+            while not stop.is_set():
+                try:
+                    raw_conn, addr = server.accept()
+                except socket.timeout:
+                    continue
+                # This commissioning build limits concurrent handshake workers.
+                if threading.active_count() >= 32:
+                    LOG.warning("rejecting excess connection peer=%s", addr)
+                    raw_conn.close()
+                    continue
+                threading.Thread(target=client_worker, args=(raw_conn, addr, context), daemon=True).start()
+    finally:
+        ipc.stop()
+        LOG.info("listener stopped")
 
 
 if __name__ == "__main__":

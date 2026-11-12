@@ -58,7 +58,11 @@ class BridgeSecurityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             result = response.json()
             self.assertFalse(result["physical_execution_enabled"])
-            self.assertFalse(result["live_status_available"])
+            self.assertIsInstance(
+                result["live_status_available"], bool
+            )
+            self.assertFalse(result["physical_execution_enabled"])
+            self.assertEqual(result["command_execution"], "simulation_only")
 
 
 if __name__ == "__main__":

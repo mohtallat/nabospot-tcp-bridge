@@ -13,6 +13,7 @@ from omni_protocol import (
     decode_s5,
 )
 from zento_barrier import zento_provider
+from zento_live_status import read_live_status
 from zento_bridge_security import bridge_key_valid, integration_status
 
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
@@ -316,7 +317,21 @@ def get_zento_integration_status(
     x_bridge_key: str | None = Header(default=None),
 ):
     require_bridge_key(x_bridge_key)
-    return integration_status(mock_mode=zento_provider.mock_mode)
+
+    result = integration_status(
+        mock_mode=zento_provider.mock_mode
+    )
+
+    live = read_live_status("6003791910", 0)
+
+    result["live_status_available"] = live["live_status_available"]
+    result["gateway_connected"] = live["connected"]
+    result["gateway_online"] = live["online"]
+    result["barrier_state"] = live["barrier_state"]
+    result["last_seen_at"] = live["last_seen_at"]
+    result["live_status_source"] = live["status_source"]
+
+    return result
 
 
 @http_app.get("/barriers/{gateway_serial}/{rs485_address}/status")
@@ -326,21 +341,30 @@ def get_barrier_status(
     x_bridge_key: str | None = Header(default=None),
 ):
     require_bridge_key(x_bridge_key)
-    state = zento_provider.get_state(gateway_serial, rs485_address)
+
+    live = read_live_status(
+        gateway_serial,
+        rs485_address,
+    )
+
     return {
         "success": True,
         "provider": "zento",
-        "gateway_serial": state.gateway_serial,
-        "rs485_address": state.rs485_address,
-        "connected": True,
+        "gateway_serial": gateway_serial,
+        "rs485_address": rs485_address,
+        "connected": live["connected"],
+        "online": live["online"],
         "mock": zento_provider.mock_mode,
-        "barrier_state": state.barrier_state,
-        "fault_state": state.fault_state,
-        "voltage": state.voltage,
-        "current": state.current,
-        "last_seen_at": state.last_seen_at.isoformat() if state.last_seen_at else None,
-        "last_command": state.last_command,
-        "last_command_at": state.last_command_at.isoformat() if state.last_command_at else None,
+        "barrier_state": live["barrier_state"],
+        "fault_state": None,
+        "voltage": None,
+        "current": None,
+        "last_seen_at": live["last_seen_at"],
+        "last_command": None,
+        "last_command_at": None,
+        "status_source": live["status_source"],
+        "live_status_available": live["live_status_available"],
+        "physical_execution_enabled": False,
     }
 
 
