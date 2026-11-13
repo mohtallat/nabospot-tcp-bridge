@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from zento_protocol import ZentoFrameBuffer, ZentoProtocolError, build_frame, decode_status
 from zento_local_ipc import LocalIPCServer
 from zento_status_ipc import ZentoStatusIPCHandler
+from zento_live_commands import LiveCommandChannel, CommandIPCServer
 
 LOG = logging.getLogger("zento.recovery")
 HOST = os.getenv("ZENTO_LISTEN_HOST", "0.0.0.0")
@@ -143,6 +144,32 @@ class SessionRegistry:
 
 
 REGISTRY = SessionRegistry()
+COMMAND_CHANNEL = None
+
+
+def confirm_after_command(conn, parser, identity, generation, expected_state):
+    """Observe independent controller status; do not treat a socket write as success."""
+    deadline = time.monotonic() + 6.0
+    while time.monotonic() < deadline and REGISTRY.active(identity, generation):
+        conn.sendall(build_frame("status", address=RS485_ADDRESS))
+        until = min(deadline, time.monotonic() + RESPONSE_TIMEOUT)
+        while time.monotonic() < until and REGISTRY.active(identity, generation):
+            try:
+                data = conn.recv(4096)
+            except socket.timeout:
+                continue
+            if not data:
+                raise ConnectionError("gateway_disconnected")
+            for frame in parser.feed(data):
+                if frame.address != RS485_ADDRESS or frame.command != 0x0A or len(frame.payload) < 2:
+                    continue
+                state = decode_status(frame, reversed_direction=True)
+                REGISTRY.record_status(identity, generation, state)
+                if expected_state is not None and state == expected_state:
+                    return True
+        time.sleep(0.1)
+    return False
+
 
 
 def poll_session(conn, identity, generation):
@@ -190,11 +217,14 @@ def poll_session(conn, identity, generation):
             if missed >= MAX_MISSED_POLLS:
                 LOG.error("closing unresponsive gateway identity=%s", identity)
                 return
-        # Interruptible wait, so a replaced session exits promptly.
+        # Only this worker may read/write its mTLS socket.
         wake = time.monotonic() + STATUS_INTERVAL
         while time.monotonic() < wake:
             if not REGISTRY.active(identity, generation):
                 return
+            if COMMAND_CHANNEL is not None:
+                COMMAND_CHANNEL.process_one(conn, identity, generation, parser,
+                    lambda c, p, expected: confirm_after_command(c, p, identity, generation, expected))
             time.sleep(min(0.2, max(0, wake - time.monotonic())))
 
 
@@ -227,6 +257,18 @@ def main():
     if STATUS_INTERVAL <= 0 or RESPONSE_TIMEOUT <= 0 or MAX_MISSED_POLLS < 1:
         raise ValueError("Invalid polling configuration")
     context = create_tls_context()
+    global COMMAND_CHANNEL
+    commands_enabled = os.getenv("ZENTO_PHYSICAL_COMMANDS_ENABLED", "false").lower() == "true"
+    command_ipc = None
+    if commands_enabled:
+        COMMAND_CHANNEL = LiveCommandChannel(
+            REGISTRY, serial="6003791910", identity=EXPECTED_CN,
+            address=RS485_ADDRESS,
+            ledger_path="/var/lib/nabospot-zento/commands.sqlite3", enabled=True)
+        command_ipc = CommandIPCServer(
+            "/run/nabospot-zento/commands.sock", COMMAND_CHANNEL, os.getuid())
+        command_ipc.start()
+        LOG.warning("PHYSICAL ZENTO COMMAND CHANNEL ENABLED")
 
     ipc = LocalIPCServer(
         "/run/nabospot-zento/status.sock",
@@ -262,6 +304,8 @@ def main():
                 threading.Thread(target=client_worker, args=(raw_conn, addr, context), daemon=True).start()
     finally:
         ipc.stop()
+        if command_ipc is not None:
+            command_ipc.stop()
         LOG.info("listener stopped")
 
 

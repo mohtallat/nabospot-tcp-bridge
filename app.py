@@ -15,6 +15,7 @@ from omni_protocol import (
 from zento_barrier import zento_provider
 from zento_live_status import read_live_status
 from zento_bridge_security import bridge_key_valid, integration_status
+from zento_local_ipc import ipc_request
 
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
 NABOSPOT_BACKEND_BASE_URL = os.getenv("NABOSPOT_BACKEND_BASE_URL", "").rstrip("/")
@@ -299,9 +300,32 @@ def lock_lock(imei: str, x_bridge_key: str | None = Header(default=None)):
     return {"imei": imei, "command": "lock", "status": "sent"}
 
 
-def _run_zento_command(gateway_serial: str, rs485_address: int, command: str):
+def _run_zento_command(gateway_serial: str, rs485_address: int, command: str, command_id=None):
     try:
+        if not zento_provider.mock_mode and command in ("open", "close", "stop"):
+            if not command_id:
+                raise HTTPException(status_code=400, detail="X-Command-Id required for real movement")
+            try:
+                result = ipc_request("/run/nabospot-zento/commands.sock", {
+                    "type": "movement", "serial": gateway_serial,
+                    "address": rs485_address, "command": command,
+                    "command_id": command_id,
+                }, timeout=13.0)
+            except (OSError, TimeoutError, ValueError) as exc:
+                raise HTTPException(status_code=503, detail="Command outcome uncertain; do not automatically retry") from exc
+            if result.get("code") == "duplicate":
+                raise HTTPException(status_code=409, detail=result)
+            if result.get("accepted") is not True:
+                raise HTTPException(status_code=503, detail=result)
+            return {"success": result.get("physical_state_confirmed") is True,
+                    "mock": False, "provider": "zento", "gateway_serial": gateway_serial,
+                    "rs485_address": rs485_address, "command": command,
+                    "status": result.get("code"), "command_id": command_id,
+                    "transmitted": result.get("transmitted") is True,
+                    "physical_state_confirmed": result.get("physical_state_confirmed") is True}
         return zento_provider.execute(gateway_serial, rs485_address, command)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except NotImplementedError as exc:
@@ -373,9 +397,10 @@ def open_barrier(
     gateway_serial: str,
     rs485_address: int,
     x_bridge_key: str | None = Header(default=None),
+    x_command_id: str | None = Header(default=None),
 ):
     require_bridge_key(x_bridge_key)
-    return _run_zento_command(gateway_serial, rs485_address, "open")
+    return _run_zento_command(gateway_serial, rs485_address, "open", x_command_id)
 
 
 @http_app.post("/barriers/{gateway_serial}/{rs485_address}/close")
@@ -383,9 +408,10 @@ def close_barrier(
     gateway_serial: str,
     rs485_address: int,
     x_bridge_key: str | None = Header(default=None),
+    x_command_id: str | None = Header(default=None),
 ):
     require_bridge_key(x_bridge_key)
-    return _run_zento_command(gateway_serial, rs485_address, "close")
+    return _run_zento_command(gateway_serial, rs485_address, "close", x_command_id)
 
 
 @http_app.post("/barriers/{gateway_serial}/{rs485_address}/stop")
@@ -393,9 +419,10 @@ def stop_barrier(
     gateway_serial: str,
     rs485_address: int,
     x_bridge_key: str | None = Header(default=None),
+    x_command_id: str | None = Header(default=None),
 ):
     require_bridge_key(x_bridge_key)
-    return _run_zento_command(gateway_serial, rs485_address, "stop")
+    return _run_zento_command(gateway_serial, rs485_address, "stop", x_command_id)
 
 
 @http_app.post("/barriers/{gateway_serial}/{rs485_address}/status")

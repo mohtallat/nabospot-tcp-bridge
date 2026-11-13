@@ -63,7 +63,9 @@ class ZentoBarrierProvider:
         now = datetime.now(timezone.utc)
 
         if not self.mock_mode:
-            raise NotImplementedError("Real Zento RS485 execution is not implemented yet")
+            # Stable command IDs must be supplied by the authenticated backend
+            # when using the live endpoint. No auto-generated retryable ID.
+            raise NotImplementedError("Use the live HTTP command adapter with X-Command-Id")
 
         print(
             f"[ZENTO MOCK] command={command} "
